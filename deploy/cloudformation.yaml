@@ -29,6 +29,7 @@ Metadata:
         Parameters:
           - GitRepoUrl
           - GitBranch
+          - GitDeployKeyPrivate
       - Label:
           default: ais.usvisa-info.com account
         Parameters:
@@ -111,18 +112,29 @@ Parameters:
 
   GitRepoUrl:
     Type: String
-    Default: https://github.com/jeangnc/us-visa-bot.git
+    NoEcho: true
     Description: >-
-      Git URL to clone the bot's code from, e.g.
-      https://github.com/you/us-visa-bot.git. NoEcho because a private
-      repo's URL may need to embed a personal access token
-      (https://<token>@github.com/...) - use an SSH URL with a deploy key
-      instead if you'd rather not do that.
+      Git URL to clone the bot's code from. For a private repo cloned over
+      SSH with a deploy key (see GitDeployKeyPrivate below), use the SSH
+      form, e.g. git@github.com:you/us-visa-bot.git.
 
   GitBranch:
     Type: String
     Default: main
     Description: Branch to clone.
+
+  GitDeployKeyPrivate:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: >-
+      (Optional) Private half of a dedicated, READ-ONLY deploy key for
+      this repo - not your personal SSH key. Generate with:
+      ssh-keygen -t ed25519 -N "" -f deploy_key -C "us-visa-bot-deploy-key"
+      then add deploy_key.pub under the repo's Settings > Deploy keys
+      (leave "Allow write access" unchecked), and pass this parameter as
+      --parameter-overrides GitDeployKeyPrivate="$(cat deploy_key)". Leave
+      blank if GitRepoUrl is public or already has embedded credentials.
 
   UsVisaEmail:
     Type: String
@@ -206,6 +218,7 @@ Conditions:
     - !Not [!Equals [!Ref SshAllowedCidr, '']]
     - !Condition HasKeyPair
   UseCloudWatchLogs: !Equals [!Ref EnableCloudWatchLogs, 'true']
+  HasGitDeployKey: !Not [!Equals [!Ref GitDeployKeyPrivate, '']]
 
 Resources:
 
@@ -222,6 +235,16 @@ Resources:
     Properties:
       LogGroupName: !Sub '/us-visa-bot/${AWS::StackName}'
       RetentionInDays: !Ref LogRetentionDays
+
+  GitDeployKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasGitDeployKey
+    Properties:
+      Name: !Sub '${AWS::StackName}-git-deploy-key'
+      Description: >-
+        Read-only SSH deploy key for cloning the bot's repo. Not a personal
+        SSH key - scoped to this one repository on the GitHub side.
+      SecretString: !Ref GitDeployKeyPrivate
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -257,6 +280,17 @@ Resources:
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref VisaCredentialsSecret
+        - !If
+          - HasGitDeployKey
+          - PolicyName: ReadGitDeployKey
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Sid: GetGitDeployKeySecret
+                  Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref GitDeployKeySecret
+          - !Ref AWS::NoValue
         - !If
           - UseCloudWatchLogs
           - PolicyName: ShipLogsToCloudWatch
@@ -357,9 +391,31 @@ Resources:
               curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
               dnf install -y nodejs
 
-              # --- Clone the app code ---
-              git clone --branch '${GitBranch}' --depth 1 '${GitRepoUrl}' /opt/us-visa-bot
-              chown -R ec2-user:ec2-user /opt/us-visa-bot
+              # --- App directory (owned by ec2-user, not root, from the start - ---
+              # --- the clone and every later `git pull` both run as ec2-user)  ---
+              mkdir -p /opt/us-visa-bot
+              chown ec2-user:ec2-user /opt/us-visa-bot
+
+              # --- Set up the git deploy key for ec2-user, if one was provided.  ---
+              # --- Written to ec2-user's (not root's) ~/.ssh so that later manual ---
+              # --- `git pull` over SSH as ec2-user - e.g. via UpdateCodeCommand - ---
+              # --- can authenticate the same way the initial clone did.          ---
+              GIT_DEPLOY_KEY_SECRET_ARN="${GitDeploySecretArnOrDisabled}"
+              if [ -n "$GIT_DEPLOY_KEY_SECRET_ARN" ]; then
+                mkdir -p /home/ec2-user/.ssh
+                aws secretsmanager get-secret-value \
+                  --secret-id "$GIT_DEPLOY_KEY_SECRET_ARN" \
+                  --region '${AWS::Region}' \
+                  --query SecretString --output text > /home/ec2-user/.ssh/id_ed25519
+                ssh-keyscan -H github.com >> /home/ec2-user/.ssh/known_hosts 2>/dev/null
+                chown -R ec2-user:ec2-user /home/ec2-user/.ssh
+                chmod 700 /home/ec2-user/.ssh
+                chmod 600 /home/ec2-user/.ssh/id_ed25519
+                chmod 644 /home/ec2-user/.ssh/known_hosts
+              fi
+
+              # --- Clone the app code (as ec2-user, into the empty dir above) ---
+              sudo -u ec2-user git clone --branch '${GitBranch}' --depth 1 '${GitRepoUrl}' /opt/us-visa-bot
 
               # --- Fetch visa login credentials from Secrets Manager ---
               SECRET_JSON=$(aws secretsmanager get-secret-value \
@@ -460,4 +516,38 @@ Resources:
 
               echo "Instance setup complete. us-visa-bot is running (check: sudo systemctl status us-visa-bot)."
             - LogGroupNameOrDisabled: !If [UseCloudWatchLogs, !Ref LogGroup, 'disabled']
+              GitDeploySecretArnOrDisabled: !If [HasGitDeployKey, !Ref GitDeployKeySecret, '']
 
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID.
+    Value: !Ref BotInstance
+
+  InstancePublicIp:
+    Description: Public IP (blank if launched into a private subnet).
+    Value: !GetAtt BotInstance.PublicIp
+
+  UpdateCodeCommand:
+    Description: >-
+      The bot is cloned, installed, and started automatically at boot.
+      Run this (requires KeyPairName and SshAllowedCidr to have been set)
+      to pull a newer commit and restart the service later.
+    Value: !Sub
+      - >-
+        ssh ec2-user@${PublicIp} 'cd /opt/us-visa-bot && git pull &&
+        npm install --omit=dev && sudo systemctl restart us-visa-bot &&
+        sudo systemctl status us-visa-bot'
+      - PublicIp: !GetAtt BotInstance.PublicIp
+
+  SsmSessionCommand:
+    Description: Alternative shell access with no key pair or open port needed.
+    Value: !Sub 'aws ssm start-session --target ${BotInstance} --region ${AWS::Region}'
+
+  SecretArn:
+    Description: ARN of the Secrets Manager secret holding your ais.usvisa-info.com credentials.
+    Value: !Ref VisaCredentialsSecret
+
+  LogGroupName:
+    Condition: UseCloudWatchLogs
+    Description: CloudWatch Logs log group receiving the bot's output.
+    Value: !Ref LogGroup
