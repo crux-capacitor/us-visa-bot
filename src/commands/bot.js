@@ -5,11 +5,16 @@ import { log, sleep, isSocketHangupError } from '../lib/utils.js';
 const COOLDOWN = 3600; // 1 hour in seconds
 
 export async function botCommand(options) {
+  if (!options.current) {
+    console.error('error: required option \'-c, --current <date>\' not specified');
+    process.exit(1);
+  }
+
   const config = getConfig();
   const bot = new Bot(config, { dryRun: options.dryRun });
   let currentBookedDate = options.current;
-  const targetDate = options.target;
-  const minDate = options.min;
+  const latestDate = options.latest;
+  const earliestDate = options.earliest;
 
   log(`Initializing with current date ${currentBookedDate}`);
 
@@ -17,12 +22,12 @@ export async function botCommand(options) {
     log(`[DRY RUN MODE] Bot will only log what would be booked without actually booking`);
   }
 
-  if (targetDate) {
-    log(`Target date: ${targetDate}`);
+  if (latestDate) {
+    log(`Latest acceptable date: ${latestDate}`);
   }
 
-  if (minDate) {
-    log(`Minimum date: ${minDate}`);
+  if (earliestDate) {
+    log(`Earliest acceptable date: ${earliestDate}`);
   }
 
   try {
@@ -32,7 +37,7 @@ export async function botCommand(options) {
       const availableDate = await bot.checkAvailableDate(
         sessionHeaders,
         currentBookedDate,
-        minDate
+        earliestDate
       );
 
       if (availableDate) {
@@ -47,8 +52,8 @@ export async function botCommand(options) {
             current: currentBookedDate
           };
 
-          if (targetDate && availableDate <= targetDate) {
-            log(`Target date reached! Successfully booked appointment on ${availableDate}`);
+          if (latestDate && availableDate <= latestDate) {
+            log(`Latest acceptable date reached! Successfully booked appointment on ${availableDate}`);
             process.exit(0);
           }
         }

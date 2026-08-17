@@ -9,7 +9,11 @@ export function getConfig() {
     scheduleId: process.env.SCHEDULE_ID,
     facilityId: process.env.FACILITY_ID,
     countryCode: process.env.COUNTRY_CODE,
-    refreshDelay: Number(process.env.REFRESH_DELAY || 3)
+    refreshDelay: Number(process.env.REFRESH_DELAY || 3),
+    // Optional: only used to gate SMS notifications in dry-run mode. Not
+    // required, so it's deliberately left out of validateConfig() below.
+    notifyPhoneNumber: process.env.NOTIFY_PHONE_NUMBER || null,
+    awsRegion: process.env.AWS_REGION || null
   };
 
   validateConfig(config);

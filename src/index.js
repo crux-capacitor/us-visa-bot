@@ -2,6 +2,7 @@
 
 import { program } from 'commander';
 import { botCommand } from './commands/bot.js';
+import { testSmsCommand } from './commands/testSms.js';
 
 program
   .name('us-visa-bot')
@@ -12,16 +13,28 @@ program
   .command('bot')
   .description('Monitor and reschedule visa appointments')
   .requiredOption('-c, --current <date>', 'current booked date')
-  .option('-t, --target <date>', 'target date to stop at')
-  .option('-m, --min <date>', 'minimum date acceptable')
+  .option('-l, --latest <date>', 'latest acceptable date - stop once a date this early or earlier is found')
+  .option('-e, --earliest <date>', 'earliest acceptable date - ignore dates before this')
   .option('--dry-run', 'only log what would be booked without actually booking')
   .action(botCommand);
 
-// Default command for backward compatibility
 program
-  .requiredOption('-c, --current <date>', 'current booked date')
-  .option('-t, --target <date>', 'target date to stop at')
-  .option('-m, --min <date>', 'minimum date acceptable')
+  .command('test-sms')
+  .description('Send a test SMS via SNS to confirm notifications are working')
+  .option('--phone <number>', 'phone number to send to, E.164 format (overrides NOTIFY_PHONE_NUMBER)')
+  .option('--region <region>', 'AWS region to publish from (overrides AWS_REGION)')
+  .action(testSmsCommand);
+
+// Default command for backward compatibility (running with no subcommand name,
+// e.g. `node index.js -c ...`). This is intentionally NOT a requiredOption:
+// commander enforces requiredOptions on the root program for every
+// invocation, including other subcommands like `test-sms` - so `-c` is
+// validated manually inside botCommand() instead, only when it's actually
+// needed (i.e. when this default action runs).
+program
+  .option('-c, --current <date>', 'current booked date')
+  .option('-l, --latest <date>', 'latest acceptable date - stop once a date this early or earlier is found')
+  .option('-e, --earliest <date>', 'earliest acceptable date - ignore dates before this')
   .option('--dry-run', 'only log what would be booked without actually booking')
   .action(botCommand);
 

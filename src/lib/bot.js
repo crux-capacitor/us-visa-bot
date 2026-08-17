@@ -1,4 +1,5 @@
 import { VisaHttpClient } from './client.js';
+import { sendSmsNotification } from './notifier.js';
 import { log } from './utils.js';
 
 export class Bot {
@@ -13,7 +14,7 @@ export class Bot {
     return await this.client.login();
   }
 
-  async checkAvailableDate(sessionHeaders, currentBookedDate, minDate) {
+  async checkAvailableDate(sessionHeaders, currentBookedDate, earliestAcceptableDate) {
     const dates = await this.client.checkAvailableDate(
       sessionHeaders,
       this.config.scheduleId,
@@ -25,15 +26,16 @@ export class Bot {
       return null;
     }
 
-    // Filter dates that are better than current booked date and after minimum date
+    // Filter dates that are better than current booked date and not before the
+    // earliest acceptable date
     const goodDates = dates.filter(date => {
       if (date >= currentBookedDate) {
         log(`date ${date} is further than already booked (${currentBookedDate})`);
         return false;
       }
 
-      if (minDate && date < minDate) {
-        log(`date ${date} is before minimum date (${minDate})`);
+      if (earliestAcceptableDate && date < earliestAcceptableDate) {
+        log(`date ${date} is before earliest acceptable date (${earliestAcceptableDate})`);
         return false;
       }
 
@@ -68,6 +70,19 @@ export class Bot {
 
     if (this.dryRun) {
       log(`[DRY RUN] Would book appointment at ${date} ${time} (not actually booking)`);
+
+      // Only fires when both dry-run mode is on AND NOTIFY_PHONE_NUMBER is set -
+      // sendSmsNotification() itself also no-ops if the number is missing, but
+      // checking here keeps the intent explicit and avoids an unnecessary
+      // await/log-noise when notifications aren't configured at all.
+      if (this.config.notifyPhoneNumber) {
+        await sendSmsNotification(
+          this.config.notifyPhoneNumber,
+          `[US Visa Bot - DRY RUN] Appointment available ${date} ${time}. Would have booked automatically - dry-run mode is on, so no booking was made.`,
+          this.config.awsRegion
+        );
+      }
+
       return true;
     }
 
