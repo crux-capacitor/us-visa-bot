@@ -1,0 +1,463 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys the US Visa Appointment Bot on a single EC2 instance (t3.nano by
+  default). Provisions the instance, an IAM role scoped to exactly what the
+  bot needs (SNS direct-to-phone publish for SMS alerts, Secrets Manager
+  read access for your visa login credentials, and optional CloudWatch Logs
+  shipping), and a systemd service running it. At boot the instance patches
+  itself (dnf update), installs git and Node.js, clones your repo, installs
+  dependencies, and starts the bot - no manual code copy step required.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network
+        Parameters:
+          - VpcId
+          - SubnetId
+      - Label:
+          default: Instance
+        Parameters:
+          - InstanceType
+          - SwapFileSizeMb
+          - LatestAmiId
+          - KeyPairName
+          - SshAllowedCidr
+      - Label:
+          default: Application code
+        Parameters:
+          - GitRepoUrl
+          - GitBranch
+      - Label:
+          default: ais.usvisa-info.com account
+        Parameters:
+          - UsVisaEmail
+          - UsVisaPassword
+          - CountryCode
+          - ScheduleId
+          - FacilityId
+      - Label:
+          default: Bot behavior
+        Parameters:
+          - CurrentBookedDate
+          - LatestAcceptableDate
+          - EarliestAcceptableDate
+          - DryRun
+          - RefreshDelaySeconds
+      - Label:
+          default: SMS notifications
+        Parameters:
+          - NotifyPhoneNumber
+      - Label:
+          default: Logging
+        Parameters:
+          - EnableCloudWatchLogs
+          - LogRetentionDays
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch the instance into.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >-
+      Subnet (in the VPC above) to launch the instance into. Needs a route
+      to the internet - a public subnet with an internet gateway, or a
+      private subnet with a NAT gateway - so the bot can reach
+      ais.usvisa-info.com and AWS APIs.
+
+  InstanceType:
+    Type: String
+    Default: t3.nano
+    AllowedValues: [t3.nano, t3.micro, t3.small]
+    Description: >-
+      EC2 instance type. t3.nano (512MB RAM) is sufficient for this
+      workload - it's a plain Node.js HTTP polling loop, no browser
+      automation.
+
+  SwapFileSizeMb:
+    Type: Number
+    Default: 1024
+    MinValue: 0
+    Description: >-
+      Swap file size, in MB, created at boot as a safety net against
+      unexpected memory spikes on a small instance like t3.nano (512MB
+      RAM has no headroom to spare). Set to 0 to skip creating a swap
+      file entirely.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Resolves to the latest Amazon Linux 2023 AMI at deploy time. Leave as default.
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Existing EC2 key pair name for SSH access. Leave blank to
+      launch with no key pair - you can still reach the instance via AWS
+      Systems Manager Session Manager (already permitted by this
+      template's IAM role) without opening any inbound port.
+
+  SshAllowedCidr:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: >-
+      (Optional) CIDR allowed to SSH in, e.g. 203.0.113.4/32. Leave blank
+      to open no inbound port at all. Ignored if KeyPairName is blank.
+
+  GitRepoUrl:
+    Type: String
+    Default: https://github.com/jeangnc/us-visa-bot.git
+    Description: >-
+      Git URL to clone the bot's code from, e.g.
+      https://github.com/you/us-visa-bot.git. NoEcho because a private
+      repo's URL may need to embed a personal access token
+      (https://<token>@github.com/...) - use an SSH URL with a deploy key
+      instead if you'd rather not do that.
+
+  GitBranch:
+    Type: String
+    Default: main
+    Description: Branch to clone.
+
+  UsVisaEmail:
+    Type: String
+    NoEcho: true
+    Description: Login email for ais.usvisa-info.com. Stored in Secrets Manager, not in plaintext instance config.
+
+  UsVisaPassword:
+    Type: String
+    NoEcho: true
+    Description: Login password for ais.usvisa-info.com. Stored in Secrets Manager, not in plaintext instance config.
+
+  CountryCode:
+    Type: String
+    Description: >-
+      Country code segment of the site's URL, e.g. "kz" for
+      https://ais.usvisa-info.com/en-kz/niv.
+
+  ScheduleId:
+    Type: String
+    Description: Your appointment schedule ID (see the app's README for how to find it).
+
+  FacilityId:
+    Type: String
+    Description: Your consulate facility ID (see the app's README for how to find it).
+
+  CurrentBookedDate:
+    Type: String
+    AllowedPattern: '^\d{4}-\d{2}-\d{2}$'
+    Description: Your current booked interview date (YYYY-MM-DD).
+
+  LatestAcceptableDate:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional, --latest) Stop once a date this early or earlier is
+      booked. Leave blank for no upper bound.
+
+  EarliestAcceptableDate:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional, --earliest) Ignore dates before this. Leave blank for no
+      lower bound.
+
+  DryRun:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Start in dry-run mode (recommended until you've confirmed everything
+      works end to end). Set to "false" to allow real bookings.
+
+  RefreshDelaySeconds:
+    Type: Number
+    Default: 5
+    MinValue: 3
+    Description: Seconds between appointment checks.
+
+  NotifyPhoneNumber:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) E.164 phone number, e.g. +15551234567, to text via SNS
+      when the bot finds/books a date in dry-run mode. Leave blank to
+      disable SMS notifications.
+
+  EnableCloudWatchLogs:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Ship the bot's log output to a CloudWatch Logs log group.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    Description: CloudWatch Logs retention period, in days. Ignored if EnableCloudWatchLogs is false.
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  HasSshCidr: !And
+    - !Not [!Equals [!Ref SshAllowedCidr, '']]
+    - !Condition HasKeyPair
+  UseCloudWatchLogs: !Equals [!Ref EnableCloudWatchLogs, 'true']
+
+Resources:
+
+  VisaCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-usvisa-credentials'
+      Description: Login credentials for ais.usvisa-info.com, used by the visa appointment bot.
+      SecretString: !Sub '{"email":"${UsVisaEmail}","password":"${UsVisaPassword}"}'
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: UseCloudWatchLogs
+    Properties:
+      LogGroupName: !Sub '/us-visa-bot/${AWS::StackName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-instance-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Enables `aws ssm start-session` for shell access with no key pair
+        # and no open inbound port.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SendSmsViaSns
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: PublishDirectToPhoneNumber
+                Effect: Allow
+                Action: sns:Publish
+                # Direct-to-phone-number SNS publishes (no topic) aren't
+                # scoped to a resource ARN, so this requires Resource: "*".
+                Resource: '*'
+        - PolicyName: ReadVisaCredentials
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: GetVisaLoginSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref VisaCredentialsSecret
+        - !If
+          - UseCloudWatchLogs
+          - PolicyName: ShipLogsToCloudWatch
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Sid: WriteToBotLogGroup
+                  Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                    - logs:DescribeLogStreams
+                  Resource:
+                    - !GetAtt LogGroup.Arn
+                    - !Sub '${LogGroup.Arn}:*'
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-us-visa-bot'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'us-visa-bot instance SG for ${AWS::StackName}'
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound (HTTPS to ais.usvisa-info.com and AWS APIs)
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-us-visa-bot-sg'
+
+  SshIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSshCidr
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshAllowedCidr
+      Description: SSH access
+
+  BotInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - InstanceRole
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 8
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-us-visa-bot'
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+
+              # --- Patch the instance, install git ---
+              dnf update -y
+              dnf install -y git
+
+              # --- Swap file (safety net - t3.nano has only 512MB RAM, no ---
+              # --- headroom to spare if something misbehaves)            ---
+              SWAP_SIZE_MB="${SwapFileSizeMb}"
+              if [ "$SWAP_SIZE_MB" -gt 0 ] && [ ! -f /swapfile ]; then
+                fallocate -l "${!SWAP_SIZE_MB}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_SIZE_MB"
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo '/swapfile none swap sw 0 0' >> /etc/fstab
+              fi
+
+              # --- Node.js 20 ---
+              curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+              dnf install -y nodejs
+
+              # --- Clone the app code ---
+              git clone --branch '${GitBranch}' --depth 1 '${GitRepoUrl}' /opt/us-visa-bot
+              chown -R ec2-user:ec2-user /opt/us-visa-bot
+
+              # --- Fetch visa login credentials from Secrets Manager ---
+              SECRET_JSON=$(aws secretsmanager get-secret-value \
+                --secret-id '${VisaCredentialsSecret}' \
+                --region '${AWS::Region}' \
+                --query SecretString --output text)
+              VISA_EMAIL=$(echo "$SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["email"])')
+              VISA_PASSWORD=$(echo "$SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')
+
+              # --- Write .env for the app ---
+              cat > /opt/us-visa-bot/.env <<ENVEOF
+              EMAIL=$VISA_EMAIL
+              PASSWORD=$VISA_PASSWORD
+              COUNTRY_CODE=${CountryCode}
+              SCHEDULE_ID=${ScheduleId}
+              FACILITY_ID=${FacilityId}
+              REFRESH_DELAY=${RefreshDelaySeconds}
+              NOTIFY_PHONE_NUMBER=${NotifyPhoneNumber}
+              AWS_REGION=${AWS::Region}
+              ENVEOF
+              chmod 600 /opt/us-visa-bot/.env
+              chown ec2-user:ec2-user /opt/us-visa-bot/.env
+
+              # --- Build the run command (only include optional flags if set) ---
+              LATEST_DATE="${LatestAcceptableDate}"
+              EARLIEST_DATE="${EarliestAcceptableDate}"
+              DRY_RUN="${DryRun}"
+              ARGS="-c ${CurrentBookedDate}"
+              if [ -n "$LATEST_DATE" ]; then ARGS="$ARGS -l $LATEST_DATE"; fi
+              if [ -n "$EARLIEST_DATE" ]; then ARGS="$ARGS -e $EARLIEST_DATE"; fi
+              if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+
+              cat > /opt/us-visa-bot/run.sh <<RUNEOF
+              #!/bin/bash
+              cd /opt/us-visa-bot
+              exec /usr/bin/node src/index.js $ARGS
+              RUNEOF
+              chmod +x /opt/us-visa-bot/run.sh
+              chown ec2-user:ec2-user /opt/us-visa-bot/run.sh
+
+              # --- Install app dependencies ---
+              sudo -u ec2-user bash -c 'cd /opt/us-visa-bot && npm install --omit=dev'
+
+              # --- systemd service ---
+              cat > /etc/systemd/system/us-visa-bot.service <<'UNITEOF'
+              [Unit]
+              Description=US Visa Appointment Bot
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              WorkingDirectory=/opt/us-visa-bot
+              EnvironmentFile=/opt/us-visa-bot/.env
+              ExecStart=/opt/us-visa-bot/run.sh
+              Restart=always
+              RestartSec=30
+              User=ec2-user
+              StandardOutput=append:/var/log/us-visa-bot.log
+              StandardError=append:/var/log/us-visa-bot.log
+
+              [Install]
+              WantedBy=multi-user.target
+              UNITEOF
+
+              touch /var/log/us-visa-bot.log
+              chown ec2-user:ec2-user /var/log/us-visa-bot.log
+              systemctl daemon-reload
+              systemctl enable us-visa-bot
+
+              # --- Optional: ship /var/log/us-visa-bot.log to CloudWatch Logs ---
+              if [ "${EnableCloudWatchLogs}" = "true" ]; then
+                dnf install -y amazon-cloudwatch-agent
+                mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+                cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CWEOF
+              {
+                "logs": {
+                  "logs_collected": {
+                    "files": {
+                      "collect_list": [
+                        {
+                          "file_path": "/var/log/us-visa-bot.log",
+                          "log_group_name": "${LogGroupNameOrDisabled}",
+                          "log_stream_name": "{instance_id}"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+              CWEOF
+                /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+                  -a fetch-config -m ec2 -s \
+                  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+              fi
+
+              systemctl start us-visa-bot
+
+              echo "Instance setup complete. us-visa-bot is running (check: sudo systemctl status us-visa-bot)."
+            - LogGroupNameOrDisabled: !If [UseCloudWatchLogs, !Ref LogGroup, 'disabled']
+
