@@ -125,13 +125,48 @@ The bot will:
 - ✅ **Error recovery** - Automatically retries on network errors
 - ✅ **Secure credentials** - Uses environment variables for sensitive data
 
-## Dry-Run SMS Notifications (AWS SNS)
+## Notifications
 
-When you run with `--dry-run` and set `NOTIFY_PHONE_NUMBER` in your `.env`
-(or in the environment), the bot texts that phone number via AWS SNS
-whenever it finds a date it *would* have booked, instead of just logging it.
-Both conditions are required - dry-run mode without the env var (or the env
-var without `--dry-run`) sends no texts.
+Two independent, optional notification channels - set either, both, or
+neither. Both fire any time the bot finds and acts on a date it considers
+better than your current one: in dry-run mode you get a "would have
+booked" message, and with dry-run off (real bookings enabled) you get a
+"rescheduled to &lt;date&gt; &lt;time&gt;" message right after the actual booking
+succeeds.
+
+### ntfy push notifications (recommended)
+
+No AWS setup, no telecom registration of any kind. Set `NTFY_TOPIC` and
+install the [ntfy app](https://ntfy.sh) subscribed to that same topic name:
+
+```bash
+NTFY_TOPIC=us-visa-bot-<pick-something-random> node index.js -c 2023-06-15 --dry-run
+```
+
+Pick a hard-to-guess topic name - public `https://ntfy.sh` topics are
+unauthenticated, so anyone who knows the name can read your notifications
+(or publish fake ones). Self-host ntfy and set `NTFY_SERVER` if you want
+this fully private.
+
+Test it independently first:
+
+```bash
+node index.js test-ntfy
+# or override the .env values for a one-off test:
+node index.js test-ntfy --topic us-visa-bot-mytopic --server https://ntfy.sh
+```
+
+### SMS via AWS SNS
+
+Note: as of 2025, US carriers require A2P 10DLC brand/campaign
+registration for SNS to reliably deliver SMS to US numbers - there's no
+low-volume exemption for a single personal recipient. If you don't want to
+go through that, `ntfy` above is the simpler path; SNS SMS is documented
+here for completeness / non-US numbers / if you've already registered.
+
+When you set `NOTIFY_PHONE_NUMBER` in your `.env` (or in the environment),
+the bot texts that phone number via AWS SNS whenever it finds (dry run) or
+actually books (real run) a better date:
 
 ```bash
 NOTIFY_PHONE_NUMBER=+15551234567 node index.js -c 2023-06-15 --dry-run
@@ -141,10 +176,7 @@ This uses SNS's direct-to-phone-number publish, not a topic - no
 subscription setup needed, just a verified/eligible destination number and
 an AWS identity with `sns:Publish` permission.
 
-### Testing SNS independently
-
-Before relying on notifications from the bot itself, confirm SNS is wired up
-correctly with the standalone test command:
+Test it independently first:
 
 ```bash
 node index.js test-sms
@@ -152,11 +184,10 @@ node index.js test-sms
 node index.js test-sms --phone +15551234567 --region us-east-1
 ```
 
-This sends a single test text and exits - `0` on success, `1` on failure
-with a log line explaining what went wrong (missing phone number, missing/
-invalid AWS credentials, IAM permissions, region issues, etc.). It doesn't
-touch your visa credentials or config at all, so you can run it before
-finishing the rest of the `.env` setup.
+Both `test-sms` and `test-ntfy` send a single test message and exit - `0`
+on success, `1` on failure with a log line explaining what went wrong. They
+don't touch your visa credentials or config at all, so you can run either
+before finishing the rest of the `.env` setup.
 
 ### Running on EC2
 
@@ -201,7 +232,7 @@ aws cloudformation deploy \
       FacilityId=44 \
       CurrentBookedDate=2026-09-01 \
       DryRun=true \
-      NotifyPhoneNumber=+15551234567
+      NtfyTopic=us-visa-bot-<pick-something-random>
 ```
 
 If the repo is private, you have two options. Simplest: embed a personal
