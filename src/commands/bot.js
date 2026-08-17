@@ -37,7 +37,8 @@ export async function botCommand(options) {
       const availableDate = await bot.checkAvailableDate(
         sessionHeaders,
         currentBookedDate,
-        earliestDate
+        earliestDate,
+        latestDate
       );
 
       if (availableDate) {

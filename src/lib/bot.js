@@ -14,7 +14,7 @@ export class Bot {
     return await this.client.login();
   }
 
-  async checkAvailableDate(sessionHeaders, currentBookedDate, earliestAcceptableDate) {
+  async checkAvailableDate(sessionHeaders, currentBookedDate, earliestAcceptableDate, latestAcceptableDate) {
     const dates = await this.client.checkAvailableDate(
       sessionHeaders,
       this.config.scheduleId,
@@ -26,8 +26,8 @@ export class Bot {
       return null;
     }
 
-    // Filter dates that are better than current booked date and not before the
-    // earliest acceptable date
+    // Filter dates that are better than current booked date and fall within
+    // the [earliest, latest] acceptable window
     const goodDates = dates.filter(date => {
       if (date >= currentBookedDate) {
         log(`date ${date} is further than already booked (${currentBookedDate})`);
@@ -36,6 +36,11 @@ export class Bot {
 
       if (earliestAcceptableDate && date < earliestAcceptableDate) {
         log(`date ${date} is before earliest acceptable date (${earliestAcceptableDate})`);
+        return false;
+      }
+
+      if (latestAcceptableDate && date > latestAcceptableDate) {
+        log(`date ${date} is after latest acceptable date (${latestAcceptableDate})`);
         return false;
       }
 
