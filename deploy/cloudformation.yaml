@@ -52,6 +52,7 @@ Metadata:
           - NtfyTopic
           - NtfyServer
           - NotifyPhoneNumber
+          - HeartbeatInterval
       - Label:
           default: Logging
         Parameters:
@@ -220,6 +221,16 @@ Parameters:
       registration for SNS to reliably deliver SMS to US numbers -
       NtfyTopic above is the simpler path if you haven't already
       registered. Leave blank to disable SMS.
+
+  HeartbeatInterval:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Send a periodic "still alive" notification via whichever
+      channel(s) above are configured, so you'll notice if the bot silently
+      dies/hangs instead of just waiting indefinitely for an appointment
+      alert. Accepts a bare number of hours (e.g. "3"), or a number with a
+      unit suffix - "3h", "45m", "90s". Leave blank to disable.
 
   EnableCloudWatchLogs:
     Type: String
@@ -460,6 +471,7 @@ Resources:
               NTFY_TOPIC=${NtfyTopic}
               NTFY_SERVER=${NtfyServer}
               NOTIFY_PHONE_NUMBER=${NotifyPhoneNumber}
+              HEARTBEAT_INTERVAL=${HeartbeatInterval}
               AWS_REGION=${AWS::Region}
               ENVEOF
               chmod 600 /opt/us-visa-bot/.env

@@ -5,7 +5,7 @@ An automated bot that monitors and reschedules US visa interview appointments to
 ## Features
 
 - 🔄 Continuously monitors available appointment slots
-- 📅 Automatically books earlier dates when found
+- 📅 Automatically books earlier dates when found  
 - 🎯 Configurable earliest and latest acceptable date constraints
 - 🚨 Exits successfully once the latest acceptable date is reached
 - 📊 Detailed logging with timestamps
@@ -17,7 +17,7 @@ The bot logs into your account on https://ais.usvisa-info.com/ and checks for av
 
 ## Prerequisites
 
-- Node.js 16+
+- Node.js 16+ 
 - A valid US visa interview appointment
 - Access to https://ais.usvisa-info.com/
 
@@ -45,6 +45,13 @@ COUNTRY_CODE=your_country_code
 SCHEDULE_ID=your_schedule_id
 FACILITY_ID=your_facility_id
 REFRESH_DELAY=3
+
+# --- Optional: notifications (see the Notifications section below) ---
+NOTIFY_PHONE_NUMBER=
+AWS_REGION=us-east-1
+NTFY_TOPIC=
+NTFY_SERVER=https://ntfy.sh
+HEARTBEAT_INTERVAL=
 ```
 
 ### Finding Your Configuration Values
@@ -57,6 +64,11 @@ REFRESH_DELAY=3
 | `SCHEDULE_ID` | Your appointment schedule ID | Found in URL when rescheduling: <br>`https://ais.usvisa-info.com/en-{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/continue_actions` |
 | `FACILITY_ID` | Your consulate facility ID | Found in network calls when selecting dates, or inspect the date selector dropdown <br>Example: Paris = `44` |
 | `REFRESH_DELAY` | Seconds between checks | Optional, defaults to 3 seconds |
+| `NOTIFY_PHONE_NUMBER` | Phone number (E.164, e.g. `+15551234567`) to text via AWS SNS | Optional - see [SMS via AWS SNS](#sms-via-aws-sns) |
+| `AWS_REGION` | AWS region SNS should publish from | Optional - only needed for SMS; usually auto-detected on EC2 |
+| `NTFY_TOPIC` | ntfy.sh topic name to push notifications to | Optional - see [ntfy push notifications](#ntfy-push-notifications-recommended) |
+| `NTFY_SERVER` | ntfy server to publish to | Optional, defaults to `https://ntfy.sh`; only change if self-hosting |
+| `HEARTBEAT_INTERVAL` | How often to send a "still alive" notification | Optional - see [`"Still alive" heartbeat`](#still-alive-heartbeat) |
 
 ## Usage
 
@@ -188,6 +200,23 @@ Both `test-sms` and `test-ntfy` send a single test message and exit - `0`
 on success, `1` on failure with a log line explaining what went wrong. They
 don't touch your visa credentials or config at all, so you can run either
 before finishing the rest of the `.env` setup.
+
+### "Still alive" heartbeat
+
+Appointment notifications only fire when something changes, so there's no
+built-in way to tell "no news" apart from "the bot silently died an hour
+ago." Set `HEARTBEAT_INTERVAL` to get a periodic reminder that it's still
+running, sent via whichever channel(s) you already configured above (ntfy
+and/or SMS - no separate setup needed):
+
+```bash
+HEARTBEAT_INTERVAL=3h node index.js -c 2023-06-15 --dry-run
+```
+
+Accepts a bare number of hours, or a number with a unit suffix - `3h`,
+`45m`, `90s`. Leave unset to disable. The first heartbeat fires one full
+interval after the bot starts polling (not immediately on startup), and
+then repeats on that interval for as long as the process keeps running.
 
 ### Running on EC2
 

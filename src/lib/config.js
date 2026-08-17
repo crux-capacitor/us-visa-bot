@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { parseDurationToSeconds } from './utils.js';
 
 dotenv.config();
 
@@ -17,11 +18,23 @@ export function getConfig() {
     // ntfy push notifications - no AWS/telecom registration needed. See
     // .env.example for setup. NTFY_SERVER defaults to the public ntfy.sh.
     ntfyTopic: process.env.NTFY_TOPIC || null,
-    ntfyServer: process.env.NTFY_SERVER || 'https://ntfy.sh'
+    ntfyServer: process.env.NTFY_SERVER || 'https://ntfy.sh',
+    // Optional "still alive" heartbeat - see .env.example. Sent via
+    // whichever notification channel(s) above are configured.
+    heartbeatIntervalSeconds: parseHeartbeatInterval(process.env.HEARTBEAT_INTERVAL)
   };
 
   validateConfig(config);
   return config;
+}
+
+function parseHeartbeatInterval(value) {
+  try {
+    return parseDurationToSeconds(value);
+  } catch (err) {
+    console.error(`Invalid HEARTBEAT_INTERVAL: ${err.message}. Heartbeat notifications disabled.`);
+    return null;
+  }
 }
 
 function validateConfig(config) {

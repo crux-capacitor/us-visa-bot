@@ -30,10 +30,16 @@ export async function botCommand(options) {
     log(`Earliest acceptable date: ${earliestDate}`);
   }
 
+  if (config.heartbeatIntervalSeconds) {
+    log(`"Still alive" heartbeat notifications every ${config.heartbeatIntervalSeconds} seconds`);
+  }
+
   try {
     const sessionHeaders = await bot.initialize();
 
     while (true) {
+      await bot.sendHeartbeatIfDue(currentBookedDate);
+
       const availableDate = await bot.checkAvailableDate(
         sessionHeaders,
         currentBookedDate,

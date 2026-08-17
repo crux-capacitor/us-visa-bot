@@ -7,6 +7,11 @@ export class Bot {
     this.config = config;
     this.dryRun = options.dryRun || false;
     this.client = new VisaHttpClient(this.config.countryCode, this.config.email, this.config.password);
+    this.heartbeatIntervalMs = config.heartbeatIntervalSeconds ? config.heartbeatIntervalSeconds * 1000 : null;
+    // Baseline is set on the first check rather than at construction, so the
+    // first heartbeat fires one full interval after the bot actually starts
+    // polling, not one interval after the process happened to be created.
+    this.lastHeartbeatAt = null;
   }
 
   async initialize() {
@@ -78,6 +83,36 @@ export class Bot {
         priority: 4,
       });
     }
+  }
+
+  // Sends a "still alive" notification via whichever channel(s) are
+  // configured, once per heartbeatIntervalMs. No-ops entirely if
+  // HEARTBEAT_INTERVAL wasn't set. Call this once per poll loop iteration -
+  // it tracks its own timing internally, so callers don't need to.
+  async sendHeartbeatIfDue(currentBookedDate) {
+    if (!this.heartbeatIntervalMs) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (this.lastHeartbeatAt === null) {
+      this.lastHeartbeatAt = now;
+      return;
+    }
+
+    if (now - this.lastHeartbeatAt < this.heartbeatIntervalMs) {
+      return;
+    }
+
+    this.lastHeartbeatAt = now;
+
+    log('Sending heartbeat notification');
+
+    await this.notify(
+      `US Visa Bot heartbeat: still running, currently monitoring for dates earlier than ${currentBookedDate}.`,
+      'US Visa Bot - still alive'
+    );
   }
 
   async bookAppointment(sessionHeaders, date) {
