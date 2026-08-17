@@ -5,9 +5,9 @@ An automated bot that monitors and reschedules US visa interview appointments to
 ## Features
 
 - 🔄 Continuously monitors available appointment slots
-- 📅 Automatically books earlier dates when found  
-- 🎯 Configurable target and minimum date constraints
-- 🚨 Exits successfully when target date is reached
+- 📅 Automatically books earlier dates when found
+- 🎯 Configurable earliest and latest acceptable date constraints
+- 🚨 Exits successfully once the latest acceptable date is reached
 - 📊 Detailed logging with timestamps
 - 🔐 Secure authentication with environment variables
 
@@ -17,7 +17,7 @@ The bot logs into your account on https://ais.usvisa-info.com/ and checks for av
 
 ## Prerequisites
 
-- Node.js 16+ 
+- Node.js 16+
 - A valid US visa interview appointment
 - Access to https://ais.usvisa-info.com/
 
@@ -63,7 +63,7 @@ REFRESH_DELAY=3
 Run the bot with your current appointment date:
 
 ```bash
-node index.js -c <current_date> [-t <target_date>] [-m <min_date>]
+node index.js -c <current_date> [-l <latest_date>] [-e <earliest_date>]
 ```
 
 ### Command Line Arguments
@@ -71,8 +71,8 @@ node index.js -c <current_date> [-t <target_date>] [-m <min_date>]
 | Flag | Long Form | Required | Description |
 |------|-----------|----------|-------------|
 | `-c` | `--current` | ✅ | Your current booked interview date (YYYY-MM-DD) |
-| `-t` | `--target` | ❌ | Target date to stop at - exits successfully when reached |
-| `-m` | `--min` | ❌ | Minimum acceptable date - skips dates before this |
+| `-l` | `--latest` | ❌ | Latest acceptable date - exits successfully once a date this early or earlier is booked |
+| `-e` | `--earliest` | ❌ | Earliest acceptable date - skips dates before this |
 
 ### Examples
 
@@ -80,14 +80,14 @@ node index.js -c <current_date> [-t <target_date>] [-m <min_date>]
 # Basic usage - reschedule to any earlier date
 node index.js -c 2023-06-15
 
-# With target date - stop when you get June 1st or earlier  
-node index.js -c 2023-06-15 -t 2023-06-01
+# With a latest acceptable date - stop once you get June 1st or earlier
+node index.js -c 2023-06-15 -l 2023-06-01
 
-# With minimum date - only accept dates after May 1st
-node index.js -c 2023-06-15 -m 2023-05-01
+# With an earliest acceptable date - only accept dates after May 1st
+node index.js -c 2023-06-15 -e 2023-05-01
 
 # With both constraints - only book between May 1st and June 1st
-node index.js -c 2023-06-15 -t 2023-06-01 -m 2023-05-01
+node index.js -c 2023-06-15 -l 2023-06-01 -e 2023-05-01
 
 # Get help
 node index.js --help
@@ -100,30 +100,187 @@ The bot will:
 2. **Check** for available dates every few seconds
 3. **Compare** found dates against your constraints:
    - Must be earlier than current date (`-c`)
-   - Must be after minimum date (`-m`) if specified
-   - Will exit successfully if target date (`-t`) is reached
+   - Must be on or after the earliest acceptable date (`-e`) if specified
+   - Will exit successfully once the latest acceptable date (`-l`) is reached
 4. **Book** the appointment automatically if conditions are met
-5. **Continue** monitoring until target is reached or manually stopped
+5. **Continue** monitoring until the latest acceptable date is reached or manually stopped
 
 ## Output Examples
 
 ```
 [2023-07-16T10:30:00.000Z] Initializing with current date 2023-08-15
-[2023-07-16T10:30:00.000Z] Target date: 2023-07-01
-[2023-07-16T10:30:00.000Z] Minimum date: 2023-06-01
+[2023-07-16T10:30:00.000Z] Latest acceptable date: 2023-07-01
+[2023-07-16T10:30:00.000Z] Earliest acceptable date: 2023-06-01
 [2023-07-16T10:30:01.000Z] Logging in
 [2023-07-16T10:30:03.000Z] nearest date is further than already booked (2023-08-15 vs 2023-09-01)
 [2023-07-16T10:30:06.000Z] booked time at 2023-07-15 09:00
-[2023-07-16T10:30:06.000Z] Target date reached! Successfully booked appointment on 2023-07-15
+[2023-07-16T10:30:06.000Z] Latest acceptable date reached! Successfully booked appointment on 2023-07-15
 ```
 
 ## Safety Features
 
 - ✅ **Read-only until booking** - Only books when better dates are found
 - ✅ **Respects constraints** - Won't book outside your specified date range
-- ✅ **Graceful exit** - Stops automatically when target is reached
+- ✅ **Graceful exit** - Stops automatically once the latest acceptable date is reached
 - ✅ **Error recovery** - Automatically retries on network errors
 - ✅ **Secure credentials** - Uses environment variables for sensitive data
+
+## Dry-Run SMS Notifications (AWS SNS)
+
+When you run with `--dry-run` and set `NOTIFY_PHONE_NUMBER` in your `.env`
+(or in the environment), the bot texts that phone number via AWS SNS
+whenever it finds a date it *would* have booked, instead of just logging it.
+Both conditions are required - dry-run mode without the env var (or the env
+var without `--dry-run`) sends no texts.
+
+```bash
+NOTIFY_PHONE_NUMBER=+15551234567 node index.js -c 2023-06-15 --dry-run
+```
+
+This uses SNS's direct-to-phone-number publish, not a topic - no
+subscription setup needed, just a verified/eligible destination number and
+an AWS identity with `sns:Publish` permission.
+
+### Testing SNS independently
+
+Before relying on notifications from the bot itself, confirm SNS is wired up
+correctly with the standalone test command:
+
+```bash
+node index.js test-sms
+# or override the .env values for a one-off test:
+node index.js test-sms --phone +15551234567 --region us-east-1
+```
+
+This sends a single test text and exits - `0` on success, `1` on failure
+with a log line explaining what went wrong (missing phone number, missing/
+invalid AWS credentials, IAM permissions, region issues, etc.). It doesn't
+touch your visa credentials or config at all, so you can run it before
+finishing the rest of the `.env` setup.
+
+### Running on EC2
+
+The bot picks up AWS credentials automatically from the EC2 instance's IAM
+role - no access keys need to live in `.env` or anywhere in this repo.
+
+A t3.nano is plenty for this workload (it's a plain HTTP polling loop, no
+browser automation) - roughly $3-4/month on-demand.
+
+Note: new AWS accounts start in the SNS **SMS sandbox** in most regions,
+which restricts sending to verified numbers only and caps monthly spend. If
+texts aren't arriving, check whether your account needs to request
+production access for SMS in the SNS console.
+
+### Deploying with CloudFormation
+
+`deploy/cloudformation.yaml` provisions everything needed to run this on
+EC2: the instance (t3.nano by default), a security group, an IAM role
+scoped to exactly what the bot needs (`sns:Publish` for SMS, plus
+`secretsmanager:GetSecretValue` for a Secrets Manager secret it also
+creates to hold your ais.usvisa-info.com login), and a systemd service. At
+boot, the instance patches itself (`dnf update`), installs git and
+Node.js, clones your repo, runs `npm install`, and starts the bot - no
+manual deploy step required.
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/cloudformation.yaml \
+  --stack-name us-visa-bot \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+      VpcId=vpc-xxxxxxxx \
+      SubnetId=subnet-xxxxxxxx \
+      KeyPairName=my-key \
+      SshAllowedCidr=203.0.113.4/32 \
+      GitRepoUrl=https://github.com/you/us-visa-bot.git \
+      GitBranch=main \
+      UsVisaEmail=you@example.com \
+      UsVisaPassword='your-password' \
+      CountryCode=kz \
+      ScheduleId=12345678 \
+      FacilityId=44 \
+      CurrentBookedDate=2026-09-01 \
+      DryRun=true \
+      NotifyPhoneNumber=+15551234567
+```
+
+If the repo is private, you have two options. Simplest: embed a personal
+access token in `GitRepoUrl` (`https://<token>@github.com/...`) - it's
+`NoEcho` in the template, so it won't show up in `describe-stacks` output.
+
+More scoped: use a dedicated, **read-only deploy key** (not your personal
+SSH key) via `GitDeployKeyPrivate`:
+
+```bash
+ssh-keygen -t ed25519 -N "" -f deploy_key -C "us-visa-bot-deploy-key"
+```
+
+Add `deploy_key.pub` under the repo's **Settings → Deploy keys** (leave
+"Allow write access" unchecked - the instance only ever needs to `git
+clone`/`git pull`), then pass the private half as a parameter:
+
+```bash
+      GitRepoUrl=git@github.com:you/us-visa-bot.git \
+      GitDeployKeyPrivate="$(cat deploy_key)" \
+```
+
+The template stores it in its own Secrets Manager secret (separate from
+your visa credentials) and the instance fetches it into `ec2-user`'s
+`~/.ssh` at boot - the same identity both the initial clone and any later
+`git pull` (via `UpdateCodeCommand`) use, so you don't need to manage keys
+in two places. Delete the local `deploy_key`/`deploy_key.pub` files once
+they're uploaded; you won't need them again unless you're rotating the
+key.
+
+### Keeping parameters in a file instead of a long command line
+
+`aws cloudformation deploy --parameter-overrides` only takes `KEY=VALUE`
+pairs as separate command-line arguments - it doesn't read a YAML/JSON
+file directly, which gets painful once you're passing something like a
+multi-line private key. `deploy/deploy.py` bridges that: put your values
+in a flat YAML file (e.g. `deploy/cloudformation_params.yml` - already
+covered by `.gitignore` since it holds real credentials) and run:
+
+```bash
+pip install pyyaml --break-system-packages   # if you don't already have it
+python3 deploy/deploy.py --params-file deploy/cloudformation_params.yml
+```
+
+Format a private key value with a YAML block scalar, not quotes, so the
+line breaks are preserved exactly:
+
+```yaml
+GitDeployKeyPrivate: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+  QyNTUxOQAAACBTs0oPz0uNv8qN2VYb1z8mFZ...
+  -----END OPENSSH PRIVATE KEY-----
+```
+
+Use `--dry-run` to print the command with values redacted, as a sanity
+check on parameter names before you actually deploy.
+
+Check progress and grab the instance's outputs once it's up:
+
+```bash
+aws cloudformation describe-stacks --stack-name us-visa-bot \
+  --query "Stacks[0].Outputs"
+```
+
+If something looks wrong, `/var/log/cloud-init-output.log` on the
+instance has the full boot/deploy log (reachable via SSH or the
+`SsmSessionCommand` output).
+
+Leave `KeyPairName`/`SshAllowedCidr` blank to launch with no SSH access at
+all - the IAM role also grants Systems Manager Session Manager, so
+`aws ssm start-session --target <instance-id>` still gets you a shell (see
+the `SsmSessionCommand` output). To ship a newer commit later, use the
+`UpdateCodeCommand` output (requires SSH to have been enabled).
+
+`DryRun` defaults to `true` so a first deploy never books anything for
+real - flip it to `false` (via a stack update, or `UpdateCodeCommand` plus
+manually editing `.env` on the instance) once you've confirmed everything
+is working as expected.
 
 ## Contributing
 
