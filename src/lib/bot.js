@@ -1,5 +1,5 @@
 import { VisaHttpClient } from './client.js';
-import { sendSmsNotification } from './notifier.js';
+import { sendSmsNotification, sendNtfyNotification } from './notifier.js';
 import { log } from './utils.js';
 
 export class Bot {
@@ -55,6 +55,26 @@ export class Bot {
     return earliestDate;
   }
 
+  // Fires whichever notification channels are configured - each is
+  // independently optional and no-ops on its own if unset, but checking
+  // here keeps the intent explicit and avoids unnecessary await/log-noise
+  // when a channel isn't configured at all. Shared by both the dry-run and
+  // real-booking paths so a rescheduled appointment always notifies the
+  // same way a dry-run "would have booked" does.
+  async notify(message, title) {
+    if (this.config.notifyPhoneNumber) {
+      await sendSmsNotification(this.config.notifyPhoneNumber, message, this.config.awsRegion);
+    }
+
+    if (this.config.ntfyTopic) {
+      await sendNtfyNotification(this.config.ntfyTopic, message, {
+        server: this.config.ntfyServer,
+        title,
+        priority: 4,
+      });
+    }
+  }
+
   async bookAppointment(sessionHeaders, date) {
     const time = await this.client.checkAvailableTime(
       sessionHeaders,
@@ -71,17 +91,10 @@ export class Bot {
     if (this.dryRun) {
       log(`[DRY RUN] Would book appointment at ${date} ${time} (not actually booking)`);
 
-      // Only fires when both dry-run mode is on AND NOTIFY_PHONE_NUMBER is set -
-      // sendSmsNotification() itself also no-ops if the number is missing, but
-      // checking here keeps the intent explicit and avoids an unnecessary
-      // await/log-noise when notifications aren't configured at all.
-      if (this.config.notifyPhoneNumber) {
-        await sendSmsNotification(
-          this.config.notifyPhoneNumber,
-          `[US Visa Bot - DRY RUN] Appointment available ${date} ${time}. Would have booked automatically - dry-run mode is on, so no booking was made.`,
-          this.config.awsRegion
-        );
-      }
+      await this.notify(
+        `[US Visa Bot - DRY RUN] Appointment available ${date} ${time}. Would have booked automatically - dry-run mode is on, so no booking was made.`,
+        'US Visa Bot - appointment found (dry run)'
+      );
 
       return true;
     }
@@ -95,6 +108,12 @@ export class Bot {
     );
 
     log(`booked time at ${date} ${time}`);
+
+    await this.notify(
+      `US Visa Bot: appointment rescheduled to ${date} ${time}.`,
+      'US Visa Bot - appointment rescheduled'
+    );
+
     return true;
   }
 

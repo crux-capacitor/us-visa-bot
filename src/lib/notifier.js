@@ -1,4 +1,5 @@
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import fetch from 'node-fetch';
 import { log } from './utils.js';
 
 // Reused across calls so we're not re-authenticating with AWS on every check.
@@ -36,6 +37,41 @@ export async function sendSmsNotification(phoneNumber, message, region) {
   } catch (err) {
     // Never let a notification failure take down the polling loop.
     log(`Failed to send SMS notification: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Sends a push notification via ntfy (https://ntfy.sh or a self-hosted
+ * server) - a single unauthenticated HTTP POST, no AWS/SNS/telecom
+ * registration involved. No-ops (returns false) if topic is falsy.
+ */
+export async function sendNtfyNotification(topic, message, options = {}) {
+  if (!topic) {
+    return false;
+  }
+
+  const server = (options.server || 'https://ntfy.sh').replace(/\/+$/, '');
+  const url = `${server}/${encodeURIComponent(topic)}`;
+
+  try {
+    const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
+    if (options.title) {
+      headers['Title'] = options.title;
+    }
+    if (options.priority) {
+      headers['Priority'] = String(options.priority);
+    }
+
+    const res = await fetch(url, { method: 'POST', headers, body: message });
+    if (!res.ok) {
+      log(`Failed to send ntfy notification: HTTP ${res.status} ${res.statusText}`);
+      return false;
+    }
+    log(`Sent ntfy notification to topic '${topic}'`);
+    return true;
+  } catch (err) {
+    log(`Failed to send ntfy notification: ${err.message}`);
     return false;
   }
 }

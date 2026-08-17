@@ -3,6 +3,7 @@
 import { program } from 'commander';
 import { botCommand } from './commands/bot.js';
 import { testSmsCommand } from './commands/testSms.js';
+import { testNtfyCommand } from './commands/testNtfy.js';
 
 program
   .name('us-visa-bot')
@@ -24,6 +25,13 @@ program
   .option('--phone <number>', 'phone number to send to, E.164 format (overrides NOTIFY_PHONE_NUMBER)')
   .option('--region <region>', 'AWS region to publish from (overrides AWS_REGION)')
   .action(testSmsCommand);
+
+program
+  .command('test-ntfy')
+  .description('Send a test push notification via ntfy to confirm notifications are working')
+  .option('--topic <name>', 'ntfy topic to send to (overrides NTFY_TOPIC)')
+  .option('--server <url>', 'ntfy server (overrides NTFY_SERVER, defaults to https://ntfy.sh)')
+  .action(testNtfyCommand);
 
 // Default command for backward compatibility (running with no subcommand name,
 // e.g. `node index.js -c ...`). This is intentionally NOT a requiredOption:
