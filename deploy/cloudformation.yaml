@@ -47,8 +47,10 @@ Metadata:
           - DryRun
           - RefreshDelaySeconds
       - Label:
-          default: SMS notifications
+          default: Notifications
         Parameters:
+          - NtfyTopic
+          - NtfyServer
           - NotifyPhoneNumber
       - Label:
           default: Logging
@@ -193,13 +195,31 @@ Parameters:
     MinValue: 3
     Description: Seconds between appointment checks.
 
+  NtfyTopic:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional, recommended) ntfy.sh topic name to push a notification to
+      whenever the bot finds (DryRun) or actually books (real run) a
+      better date - no AWS/telecom registration needed. Pick something
+      hard to guess: public ntfy.sh topics are unauthenticated. Leave
+      blank to disable.
+
+  NtfyServer:
+    Type: String
+    Default: https://ntfy.sh
+    Description: ntfy server to publish to. Only change this if self-hosting.
+
   NotifyPhoneNumber:
     Type: String
     Default: ''
     Description: >-
       (Optional) E.164 phone number, e.g. +15551234567, to text via SNS
-      when the bot finds/books a date in dry-run mode. Leave blank to
-      disable SMS notifications.
+      whenever the bot finds (DryRun) or actually books (real run) a
+      better date. Note: as of 2025, US carriers require A2P 10DLC brand
+      registration for SNS to reliably deliver SMS to US numbers -
+      NtfyTopic above is the simpler path if you haven't already
+      registered. Leave blank to disable SMS.
 
   EnableCloudWatchLogs:
     Type: String
@@ -218,6 +238,7 @@ Conditions:
     - !Not [!Equals [!Ref SshAllowedCidr, '']]
     - !Condition HasKeyPair
   UseCloudWatchLogs: !Equals [!Ref EnableCloudWatchLogs, 'true']
+  HasPhoneNumber: !Not [!Equals [!Ref NotifyPhoneNumber, '']]
   HasGitDeployKey: !Not [!Equals [!Ref GitDeployKeyPrivate, '']]
 
 Resources:
@@ -262,16 +283,19 @@ Resources:
         # and no open inbound port.
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-        - PolicyName: SendSmsViaSns
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: PublishDirectToPhoneNumber
-                Effect: Allow
-                Action: sns:Publish
-                # Direct-to-phone-number SNS publishes (no topic) aren't
-                # scoped to a resource ARN, so this requires Resource: "*".
-                Resource: '*'
+        - !If
+          - HasPhoneNumber
+          - PolicyName: SendSmsViaSns
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Sid: PublishDirectToPhoneNumber
+                  Effect: Allow
+                  Action: sns:Publish
+                  # Direct-to-phone-number SNS publishes (no topic) aren't
+                  # scoped to a resource ARN, so this requires Resource: "*".
+                  Resource: '*'
+          - !Ref AWS::NoValue
         - PolicyName: ReadVisaCredentials
           PolicyDocument:
             Version: '2012-10-17'
@@ -433,6 +457,8 @@ Resources:
               SCHEDULE_ID=${ScheduleId}
               FACILITY_ID=${FacilityId}
               REFRESH_DELAY=${RefreshDelaySeconds}
+              NTFY_TOPIC=${NtfyTopic}
+              NTFY_SERVER=${NtfyServer}
               NOTIFY_PHONE_NUMBER=${NotifyPhoneNumber}
               AWS_REGION=${AWS::Region}
               ENVEOF
