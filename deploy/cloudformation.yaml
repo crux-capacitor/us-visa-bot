@@ -481,9 +481,9 @@ Resources:
               LATEST_DATE="${LatestAcceptableDate}"
               EARLIEST_DATE="${EarliestAcceptableDate}"
               DRY_RUN="${DryRun}"
-              ARGS="-c ${CurrentBookedDate}"
-              if [ -n "$LATEST_DATE" ]; then ARGS="$ARGS -l $LATEST_DATE"; fi
-              if [ -n "$EARLIEST_DATE" ]; then ARGS="$ARGS -e $EARLIEST_DATE"; fi
+              ARGS="--current ${CurrentBookedDate}"
+              if [ -n "$EARLIEST_DATE" ]; then ARGS="$ARGS --earliest $EARLIEST_DATE"; fi
+              if [ -n "$LATEST_DATE" ]; then ARGS="$ARGS --latest $LATEST_DATE"; fi
               if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
 
               cat > /opt/us-visa-bot/run.sh <<RUNEOF
