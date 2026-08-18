@@ -89,7 +89,7 @@ export class Bot {
   // configured, once per heartbeatIntervalMs. No-ops entirely if
   // HEARTBEAT_INTERVAL wasn't set. Call this once per poll loop iteration -
   // it tracks its own timing internally, so callers don't need to.
-  async sendHeartbeatIfDue(currentBookedDate) {
+  async sendHeartbeatIfDue(currentBookedDate, earliestAcceptableDate, latestAcceptableDate) {
     if (!this.heartbeatIntervalMs) {
       return;
     }
@@ -109,10 +109,19 @@ export class Bot {
 
     log('Sending heartbeat notification');
 
-    await this.notify(
-      `US Visa Bot heartbeat: still running, currently monitoring for dates earlier than ${currentBookedDate}.`,
-      'US Visa Bot - still alive'
-    );
+    let message = `US Visa Bot heartbeat: still running, currently monitoring for dates earlier than ${currentBookedDate}`;
+
+    if (earliestAcceptableDate && latestAcceptableDate) {
+      message += ` (between ${earliestAcceptableDate} and ${latestAcceptableDate})`;
+    } else if (earliestAcceptableDate) {
+      message += ` (no earlier than ${earliestAcceptableDate})`;
+    } else if (latestAcceptableDate) {
+      message += ` (no later than ${latestAcceptableDate})`;
+    }
+
+    message += '.';
+
+    await this.notify(message, 'US Visa Bot - still alive');
   }
 
   async bookAppointment(sessionHeaders, date) {

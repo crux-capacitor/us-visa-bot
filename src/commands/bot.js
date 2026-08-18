@@ -51,7 +51,7 @@ export async function botCommand(options) {
         sessionHeaders = await bot.initialize();
       }
 
-      await bot.sendHeartbeatIfDue(currentBookedDate);
+      await bot.sendHeartbeatIfDue(currentBookedDate, earliestDate, latestDate);
 
       const availableDate = await bot.checkAvailableDate(
         sessionHeaders,
