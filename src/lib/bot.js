@@ -148,8 +148,10 @@ export class Bot {
       return true;
     }
 
+    let bookingResult;
+
     try {
-      await this.client.book(
+      bookingResult = await this.client.book(
         sessionHeaders,
         this.config.scheduleId,
         this.config.facilityId,
@@ -173,14 +175,63 @@ export class Bot {
       return false;
     }
 
-    log(`booked time at ${date} ${time}`);
+    log(`Booking request for ${date} ${time} did not throw - running an independent follow-up check before trusting it`);
+
+    // book()'s own "did it redirect" signal has already been proven
+    // unreliable on this site (a rejection can redirect too, not just a
+    // confirmation) - so treat that as inconclusive rather than as proof.
+    // Instead, make a separate request to re-fetch the appointment page and
+    // look for the date we tried to book. This is still a best-effort check
+    // (no documentation for this site's exact markup), so a failure to find
+    // it means "couldn't confirm", not "confirmed failed".
+    let verification = null;
+
+    try {
+      verification = await this.client.verifyCurrentAppointmentDate(
+        sessionHeaders,
+        this.config.scheduleId,
+        date
+      );
+    } catch (err) {
+      log(`Follow-up verification request itself failed: ${err.message}`);
+    }
+
+    const bookingNote = bookingResult && bookingResult.pageSummary
+      ? ` Booking response said: "${bookingResult.pageSummary}"`
+      : '';
+
+    if (verification && verification.confirmed) {
+      log(`Follow-up check confirmed ${date} on the appointment page.`);
+
+      await this.notify(
+        `US Visa Bot: appointment rescheduled to ${date} ${time} - confirmed by an independent follow-up check of the appointment page.${bookingNote}`,
+        'US Visa Bot - appointment rescheduled'
+      );
+
+      return true;
+    }
+
+    // Given two prior false *positives* here, default to NOT claiming
+    // success and NOT advancing currentBookedDate/persisted state when the
+    // follow-up can't confirm it - safer to keep retrying a possibly-already-
+    // successful booking than to silently stop looking, or persist state,
+    // on unconfirmed evidence. The tradeoff is a possible false NEGATIVE if
+    // this site's page just doesn't contain anything our heuristic
+    // recognizes - if that turns out to be the case, share the logged
+    // pageSummary below so the matching logic can be corrected with real
+    // evidence.
+    const pageNote = verification && verification.pageSummary
+      ? ` The appointment page currently shows: "${verification.pageSummary}"`
+      : '';
+
+    log(`Follow-up check could NOT confirm ${date} on the appointment page - not marking this as a confirmed reschedule.`);
 
     await this.notify(
-      `US Visa Bot: appointment rescheduled to ${date} ${time}.`,
-      'US Visa Bot - appointment rescheduled'
+      `US Visa Bot: attempted to reschedule to ${date} ${time}, but a follow-up check could not confirm the change went through.${bookingNote}${pageNote} Please verify manually - will keep monitoring.`,
+      'US Visa Bot - reschedule uncertain, please verify'
     );
 
-    return true;
+    return false;
   }
 
 }

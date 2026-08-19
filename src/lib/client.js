@@ -79,32 +79,101 @@ export class VisaHttpClient {
       throw new Error(`Booking request failed with HTTP ${response.status}`);
     }
 
-    // This Rails app redirects away from the booking form on a successful
-    // reschedule (e.g. to the schedule's actions page), but re-renders the
-    // same form in place - same URL, still HTTP 200 - when the booking is
-    // rejected (session hiccup, validation error, someone else took the
-    // slot first, etc). A 200 with no redirect is therefore NOT success,
-    // even though the request itself didn't throw - without this check, a
-    // rejected booking looks identical to a confirmed one and gets reported
-    // as "rescheduled" when nothing actually changed.
+    // NOTE: a redirect away from the booking form is NOT reliable proof of
+    // success on its own - it turns out this site can redirect on a
+    // rejection too (e.g. back to a listing/notice page), not just re-render
+    // the form in place. Since we don't have a fully trustworthy signal from
+    // this response alone, we always capture the resulting page's visible
+    // text (pageSummary) and surface it all the way up to the notification
+    // itself, so a human can look at what the site actually said rather than
+    // trusting a heuristic that has already been wrong twice.
+    const finalUrl = response.url;
+    const html = await response.text();
+    const pageSummary = this._extractPageSummary(html);
+
+    log(`Booking response: redirected=${response.redirected}, finalUrl=${finalUrl}`);
+    if (pageSummary) {
+      log(`Booking response page summary: "${pageSummary}"`);
+    }
+
     if (!response.redirected) {
-      const html = await response.text();
-      const flashMessage = this._extractFlashMessage(html);
       throw new Error(
-        `Booking was not confirmed - the site re-rendered the booking form instead of redirecting to a confirmation page${flashMessage ? `: "${flashMessage}"` : ' (no error message found on the page)'}`
+        `Booking was not confirmed - the site re-rendered the booking form instead of redirecting${pageSummary ? `: "${pageSummary}"` : ' (no summary text found on the page)'}`
       );
     }
 
-    return response;
+    return { redirected: response.redirected, finalUrl, pageSummary };
   }
 
-  // Best-effort extraction of a Rails flash/alert message from the
-  // re-rendered booking form, purely for a more useful error log line - the
-  // redirect check above is what actually determines success/failure.
-  _extractFlashMessage(html) {
+  // Independent ground-truth check: re-fetches the appointment page fresh
+  // (a separate request from book() itself) and looks for the date we tried
+  // to book somewhere in it. This exists specifically because book()'s own
+  // "did it redirect" signal has already been proven unreliable on this site
+  // - a rejection can redirect too, not just a confirmation. This is still a
+  // best-effort heuristic (we don't have documentation for this site's exact
+  // markup), so `confirmed: false` means "couldn't find evidence it worked",
+  // not "confirmed it failed" - always paired with pageSummary so a human
+  // can judge for themselves from the actual page text.
+  async verifyCurrentAppointmentDate(headers, scheduleId, expectedDate) {
+    const url = `${this.baseUri}/schedule/${scheduleId}/appointment`;
+    const response = await this._anonymousRequest(url, headers);
+    const html = await response.text();
+
+    return {
+      confirmed: this._pageReferencesDate(html, expectedDate),
+      pageSummary: this._extractPageSummary(html)
+    };
+  }
+
+  // Looks for an ISO date (e.g. "2027-03-08") both literally (it may appear
+  // in a hidden input, data attribute, or embedded JSON even if displayed to
+  // users differently) and as a handful of common human-readable renderings,
+  // since the visible page text is far more likely to show something like
+  // "March 8, 2027" than the raw ISO string.
+  _pageReferencesDate(html, isoDate) {
+    if (html.includes(isoDate)) {
+      return true;
+    }
+
+    const [year, month, day] = isoDate.split('-').map(Number);
+    if (!year || !month || !day) {
+      return false;
+    }
+
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const variants = [
+      date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }),
+      date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }),
+      date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }),
+      `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`,
+      `${month}/${day}/${year}`
+    ];
+
+    const lowerHtml = html.toLowerCase();
+    return variants.some(variant => lowerHtml.includes(variant.toLowerCase()));
+  }
+
+  // Best-effort extraction of readable text from a post-booking response
+  // page, for logging and for inclusion in notifications - NOT currently
+  // used to determine success/failure on its own (see the comment in book()
+  // above). Prefers a Rails flash/alert message if present (most likely to
+  // explain a rejection); falls back to the page's general visible text so
+  // a real confirmation page's content shows up too.
+  _extractPageSummary(html) {
     const $ = cheerio.load(html);
+
     const flash = $('.flash, .alert, #flash, .error, .notice').first().text().trim();
-    return flash || null;
+    if (flash) {
+      return this._collapseWhitespace(flash).slice(0, 300);
+    }
+
+    const bodyText = $('body').text();
+    const collapsed = this._collapseWhitespace(bodyText);
+    return collapsed ? collapsed.slice(0, 300) : null;
+  }
+
+  _collapseWhitespace(text) {
+    return text.replace(/\s+/g, ' ').trim();
   }
 
   // Private request methods
