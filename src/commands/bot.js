@@ -1,5 +1,6 @@
 import { Bot } from '../lib/bot.js';
 import { getConfig } from '../lib/config.js';
+import { loadState, saveState } from '../lib/state.js';
 import { log, sleep, isSocketHangupError } from '../lib/utils.js';
 
 const COOLDOWN = 3600; // 1 hour in seconds
@@ -15,6 +16,21 @@ export async function botCommand(options) {
   let currentBookedDate = options.current;
   const latestDate = options.latest;
   const earliestDate = options.earliest;
+
+  // A real booking updates currentBookedDate only in memory - without this,
+  // any restart (crash, systemd, reboot, manual restart) forgets that
+  // progress and falls back to whatever --current was launched with,
+  // risking a repeat booking attempt on a slot the bot already holds. Skip
+  // this in dry-run mode: dry-run "bookings" aren't real, so persisting them
+  // would poison state a later real run would trust.
+  if (!options.dryRun) {
+    const persisted = loadState(config.stateFilePath);
+
+    if (persisted && persisted.currentBookedDate) {
+      log(`Resuming from persisted state: currently booked date is ${persisted.currentBookedDate} (overriding --current ${currentBookedDate})`);
+      currentBookedDate = persisted.currentBookedDate;
+    }
+  }
 
   log(`Initializing with current date ${currentBookedDate}`);
 
@@ -66,6 +82,10 @@ export async function botCommand(options) {
         if (booked) {
           // Update current date to the new available date
           currentBookedDate = availableDate;
+
+          if (!options.dryRun) {
+            saveState(config.stateFilePath, { currentBookedDate });
+          }
 
           if (latestDate && availableDate <= latestDate) {
             log(`Latest acceptable date reached! Successfully booked appointment on ${availableDate}`);

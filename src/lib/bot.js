@@ -148,13 +148,30 @@ export class Bot {
       return true;
     }
 
-    await this.client.book(
-      sessionHeaders,
-      this.config.scheduleId,
-      this.config.facilityId,
-      date,
-      time
-    );
+    try {
+      await this.client.book(
+        sessionHeaders,
+        this.config.scheduleId,
+        this.config.facilityId,
+        date,
+        time
+      );
+    } catch (err) {
+      // client.book() throws if the site didn't actually confirm the
+      // booking (see client.js) - a failed attempt here is expected from
+      // time to time (e.g. another bot/user grabbed the slot first) and
+      // should NOT be reported as a successful reschedule. Notify with a
+      // distinctly different title so it's never confused with a real
+      // "rescheduled" notification, then let the caller retry.
+      log(`Booking attempt for ${date} ${time} failed: ${err.message}`);
+
+      await this.notify(
+        `US Visa Bot: found and attempted to book ${date} ${time}, but the booking was not confirmed (${err.message}). Will keep retrying.`,
+        'US Visa Bot - booking attempt failed'
+      );
+
+      return false;
+    }
 
     log(`booked time at ${date} ${time}`);
 

@@ -73,7 +73,38 @@ export class VisaHttpClient {
       'appointments[asc_appointment][time]': ''
     };
 
-    return this._submitFormWithRedirect(url, bookingHeaders, bookingData);
+    const response = await this._submitFormWithRedirect(url, bookingHeaders, bookingData);
+
+    if (!response.ok) {
+      throw new Error(`Booking request failed with HTTP ${response.status}`);
+    }
+
+    // This Rails app redirects away from the booking form on a successful
+    // reschedule (e.g. to the schedule's actions page), but re-renders the
+    // same form in place - same URL, still HTTP 200 - when the booking is
+    // rejected (session hiccup, validation error, someone else took the
+    // slot first, etc). A 200 with no redirect is therefore NOT success,
+    // even though the request itself didn't throw - without this check, a
+    // rejected booking looks identical to a confirmed one and gets reported
+    // as "rescheduled" when nothing actually changed.
+    if (!response.redirected) {
+      const html = await response.text();
+      const flashMessage = this._extractFlashMessage(html);
+      throw new Error(
+        `Booking was not confirmed - the site re-rendered the booking form instead of redirecting to a confirmation page${flashMessage ? `: "${flashMessage}"` : ' (no error message found on the page)'}`
+      );
+    }
+
+    return response;
+  }
+
+  // Best-effort extraction of a Rails flash/alert message from the
+  // re-rendered booking form, purely for a more useful error log line - the
+  // redirect check above is what actually determines success/failure.
+  _extractFlashMessage(html) {
+    const $ = cheerio.load(html);
+    const flash = $('.flash, .alert, #flash, .error, .notice').first().text().trim();
+    return flash || null;
   }
 
   // Private request methods

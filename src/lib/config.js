@@ -1,3 +1,4 @@
+import path from 'path';
 import dotenv from 'dotenv';
 import { parseDurationToSeconds } from './utils.js';
 
@@ -21,7 +22,11 @@ export function getConfig() {
     ntfyServer: process.env.NTFY_SERVER || 'https://ntfy.sh',
     // Optional "still alive" heartbeat - see .env.example. Sent via
     // whichever notification channel(s) above are configured.
-    heartbeatIntervalSeconds: parseHeartbeatInterval(process.env.HEARTBEAT_INTERVAL)
+    heartbeatIntervalSeconds: parseHeartbeatInterval(process.env.HEARTBEAT_INTERVAL),
+    // Where progress (currentBookedDate after a real booking) is persisted,
+    // so a restart - crash, systemd, reboot - doesn't forget it and revert
+    // to the --current value the process happened to be launched with.
+    stateFilePath: process.env.STATE_FILE_PATH || path.join(process.cwd(), '.us-visa-bot-state.json')
   };
 
   validateConfig(config);
