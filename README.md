@@ -52,6 +52,7 @@ AWS_REGION=us-east-1
 NTFY_TOPIC=
 NTFY_SERVER=https://ntfy.sh
 HEARTBEAT_INTERVAL=
+STATE_FILE_PATH=
 ```
 
 ### Finding Your Configuration Values
@@ -69,6 +70,7 @@ HEARTBEAT_INTERVAL=
 | `NTFY_TOPIC` | ntfy.sh topic name to push notifications to | Optional - see [ntfy push notifications](#ntfy-push-notifications-recommended) |
 | `NTFY_SERVER` | ntfy server to publish to | Optional, defaults to `https://ntfy.sh`; only change if self-hosting |
 | `HEARTBEAT_INTERVAL` | How often to send a "still alive" notification | Optional - see [`"Still alive" heartbeat`](#still-alive-heartbeat) |
+| `STATE_FILE_PATH` | Where to persist progress between restarts | Optional, defaults to `.us-visa-bot-state.json` in the working directory |
 
 ## Usage
 
@@ -133,6 +135,8 @@ The bot will:
 
 - ✅ **Read-only until booking** - Only books when better dates are found
 - ✅ **Respects constraints** - Won't book outside your specified date range
+- ✅ **Verified booking** - Confirms the site actually redirected to a confirmation page before reporting success; a rejected booking (session hiccup, slot taken by someone else) is reported as a distinct "booking attempt failed" notification, never as a false "rescheduled"
+- ✅ **Restart-safe progress** - A successful booking is persisted to disk (`STATE_FILE_PATH`), so a crash, systemd restart, or reboot won't forget it and risk re-booking a slot you already hold
 - ✅ **Graceful exit** - Stops automatically once the latest acceptable date is reached
 - ✅ **Error recovery** - Automatically retries on network errors
 - ✅ **Secure credentials** - Uses environment variables for sensitive data
@@ -230,6 +234,15 @@ Note: new AWS accounts start in the SNS **SMS sandbox** in most regions,
 which restricts sending to verified numbers only and caps monthly spend. If
 texts aren't arriving, check whether your account needs to request
 production access for SMS in the SNS console.
+
+The systemd service the CloudFormation template installs uses
+`Restart=on-failure`, not `Restart=always` - on purpose. When `--latest` is
+reached, the bot calls `process.exit(0)` to stop for good; `on-failure`
+respects that and leaves it stopped, while still auto-restarting on an
+actual crash (a non-zero exit or an uncaught exception). If you're checking
+service status, `systemctl status us-visa-bot` reporting inactive/exited
+after a "rescheduled" notification is the expected, correct outcome, not a
+crash.
 
 ### Deploying with CloudFormation
 
