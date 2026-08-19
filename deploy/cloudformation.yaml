@@ -509,7 +509,13 @@ Resources:
               WorkingDirectory=/opt/us-visa-bot
               EnvironmentFile=/opt/us-visa-bot/.env
               ExecStart=/opt/us-visa-bot/run.sh
-              Restart=always
+              # on-failure (not always): the bot calls `process.exit(0)` on
+              # purpose once --latest is reached, to stop for good. Restart=always
+              # would restart it right back up 30s later regardless of exit
+              # code, silently undoing that intentional shutdown. on-failure
+              # still restarts on a crash/uncaught exception (non-zero exit
+              # or killed by signal) - it only leaves a clean exit(0) alone.
+              Restart=on-failure
               RestartSec=30
               User=ec2-user
               StandardOutput=append:/var/log/us-visa-bot.log
