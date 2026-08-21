@@ -3,7 +3,8 @@ import { getConfig } from '../lib/config.js';
 import { loadState, saveState } from '../lib/state.js';
 import { log, sleep, isSocketHangupError } from '../lib/utils.js';
 
-const COOLDOWN = 3600; // 1 hour in seconds
+const COOLDOWN = 3600; // 1 hour in seconds, for socket hangup/network errors
+const RETRY_DELAY = 60; // 1 minute in seconds, for all other errors
 
 export async function botCommand(options) {
   if (!options.current) {
@@ -104,7 +105,15 @@ export async function botCommand(options) {
         log(`Socket hangup error: ${err.message}. Trying again after ${COOLDOWN} seconds...`);
         await sleep(COOLDOWN);
       } else {
-        log(`Session/authentication error: ${err.message}. Retrying immediately...`);
+        // This branch previously had NO delay at all - on a persistent
+        // error (e.g. the site rate-limiting/blocking login attempts) that
+        // meant retrying in a tight, effectively-zero-delay loop, hammering
+        // the site continuously instead of backing off. A fixed delay here
+        // is deliberately much shorter than COOLDOWN - most errors in this
+        // branch are one-off session/auth hiccups that should recover
+        // quickly - but it guarantees there's always SOME backoff.
+        log(`Session/authentication error: ${err.message}. Retrying in ${RETRY_DELAY} seconds...`);
+        await sleep(RETRY_DELAY);
       }
     }
   }

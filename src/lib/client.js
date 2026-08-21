@@ -247,6 +247,16 @@ export class VisaHttpClient {
   }
 
   _parseCookies(cookies) {
+    if (!cookies) {
+      // A missing Set-Cookie header means the site didn't process this as a
+      // normal request - most likely a rate-limit/block/challenge response
+      // rather than an actual login success or failure. Throwing a clear
+      // message here (instead of letting `cookies.split` blow up with a
+      // cryptic "Cannot read properties of null" further down) makes this
+      // immediately diagnosable from the logs.
+      throw new Error('No Set-Cookie header in the response - the site may be rate-limiting, blocking, or challenging this request instead of processing it normally');
+    }
+
     const parsedCookies = {};
 
     cookies.split(';').map(c => c.trim()).forEach(c => {
